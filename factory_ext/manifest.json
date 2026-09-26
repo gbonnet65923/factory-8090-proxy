@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Factory 8090 Credential Collector",
+  "version": "1.0.0",
+  "description": "Перехватывает auth-заголовки запросов factory.8090.ai и автоматически отправляет их в локальный прокси (127.0.0.1:18090)",
+  "permissions": ["webRequest"],
+  "host_permissions": [
+    "https://api.factory.8090.dev/*",
+    "https://factory.8090.ai/*",
+    "http://127.0.0.1:18090/*"
+  ],
+  "background": { "service_worker": "background.js" }
+}
