@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import os from 'node:os';
-import path from 'node:path';
+import path from "node:path";
+import { join } from "node:path";
 import { randomUUID } from 'node:crypto';
-import { unlinkSync } from 'node:fs';
+import { unlinkSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import {
   createProxyServer,
   loadConfig,
@@ -154,11 +155,13 @@ function deltaFrame(text) {
 function fakeFetch(frameBatches) {
   const batches = Array.isArray(frameBatches[0]) ? frameBatches : [frameBatches];
   let batchIndex = 0;
-  return async url => {
+  const inputs = [];
+  const fn = async (url, options) => {
     if (url.includes('/agents/models')) {
       return new Response(JSON.stringify({ models: [] }), { status: 500 });
     }
     if (url.includes('/agents/chat-agent/input')) {
+      if (options?.body) { try { inputs.push(JSON.parse(options.body)); } catch { inputs.push(options.body); } }
       return new Response(JSON.stringify({ accepted: true }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (url.includes('/agents/chat-agent/stream')) {
@@ -177,6 +180,8 @@ function fakeFetch(frameBatches) {
     }
     throw new Error(`fakeFetch: unexpected URL ${url}`);
   };
+  fn.inputs = inputs;
+  return fn;
 }
 
 function tempFilePath() {
@@ -207,15 +212,16 @@ function requestRaw(port, method, pathname, { host, auth, extra = {}, body } = {
 }
 
 async function withServer(frames, fn, env = {}) {
+  const fetchImpl = fakeFetch(frames);
   const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath(), ...env });
-  const server = createProxyServer(config, fakeFetch(frames));
+  const server = createProxyServer(config, fetchImpl);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
   const port = server.address().port;
   try {
-    return await fn(config, port);
+    return await fn(config, port, fetchImpl);
   } finally {
     await new Promise((resolve, reject) => {
       server.close(error => (error ? reject(error) : resolve()));
@@ -480,4 +486,188 @@ test('sessions persist and resume after reload from disk', () => {
   } finally {
     try { unlinkSync(filePath); } catch { /* ignore */ }
   }
+});
+
+// ---------------------------------------------------------------------------
+// reasoning_effort passthrough
+// ---------------------------------------------------------------------------
+
+test('reasoning_effort high reaches Factory as thinking_level high', async () => {
+  await withServer([deltaFrame('ok'), doneFrame], async (config, port, fetchImpl) => {
+    const res = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ reasoning_effort: 'high' }),
+    });
+    assert.equal(res.status, 200);
+    const input = fetchImpl.inputs.at(-1);
+    assert.equal(input?.model?.configuration?.thinking_level, 'high');
+  });
+});
+
+test('reasoning_effort minimal maps to thinking_level low', async () => {
+  await withServer([deltaFrame('ok'), doneFrame], async (config, port, fetchImpl) => {
+    const res = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ reasoning_effort: 'minimal' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(fetchImpl.inputs.at(-1)?.model?.configuration?.thinking_level, 'low');
+  });
+});
+
+test('invalid reasoning_effort is rejected with 400', async () => {
+  await withServer([deltaFrame('ok'), doneFrame], async (config, port) => {
+    const res = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ reasoning_effort: 'extreme' }),
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.json.error.message, /reasoning_effort/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// degraded mode (waiting for credentials)
+// ---------------------------------------------------------------------------
+
+test('degraded server reports waiting_for_har and 503s completions', async () => {
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  const server = createProxyServer(config, fakeFetch([]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const health = await requestRaw(port, 'GET', '/health');
+    assert.equal(health.status, 200);
+    assert.equal(health.json.status, 'waiting_for_har');
+    const models = await requestRaw(port, 'GET', '/v1/models', { auth: config.localApiKey });
+    assert.deepEqual(models.json.data, []);
+    const status = await requestRaw(port, 'GET', '/v1/status');
+    assert.equal(status.json.ready, false);
+    const completion = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody(),
+    });
+    assert.equal(completion.status, 503);
+    assert.match(completion.json.error.message, /waiting for Factory credentials/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// dashboard credential paste (hot-reload path)
+// ---------------------------------------------------------------------------
+
+const harFixture = () => ({
+  log: { entries: [{
+    request: {
+      method: 'POST',
+      url: 'http://127.0.0.1:9/v2/project/project-test/agents/chat-agent/input',
+      headers: [
+        { name: 'authorization', value: 'Bearer bearer-har' },
+        { name: 'x-sofa-cognito-id-token', value: 'cognito-har' },
+        { name: 'x-zed-token', value: 'zed-har' },
+        { name: 'x-sofa-active-org-id', value: 'org-har' },
+      ],
+      postData: { text: '{"model":{"model_key":"test-model"}}' },
+    },
+    response: { content: { text: '' } },
+  }] },
+});
+
+test('dashboard HAR paste activates the proxy live', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-har-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const server = createProxyServer(config, fakeFetch([deltaFrame('live'), doneFrame]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const res = await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: { text: JSON.stringify(harFixture()) },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ready, true);
+    const health = await requestRaw(port, 'GET', '/health');
+    assert.equal(health.json.status, 'ok');
+    const completion = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody(),
+    });
+    assert.equal(completion.status, 200);
+    assert.equal(completion.json.choices[0].message.content, 'live');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
+test('dashboard header paste activates the proxy live', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-cred-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const server = createProxyServer(config, fakeFetch([deltaFrame('live'), doneFrame]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const res = await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: {
+        text: 'authorization: Bearer bearer-har\nx-sofa-cognito-id-token: cognito-har\nx-zed-token: zed-har\nx-sofa-active-org-id: org-har',
+        url: 'http://127.0.0.1:9/v2/project/project-test/agents/chat-agent/input',
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ready, true);
+    const completion = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ model: 'gpt-5.6-sol' }),
+    });
+    assert.equal(completion.status, 200);
+    assert.equal(completion.json.choices[0].message.content, 'live');
+    const saved = readFileSync(join(watchDir, 'factory-credentials.json'), 'utf8');
+    assert.equal(JSON.parse(saved).projectId, 'project-test');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
+test('dashboard paste with garbage returns 400', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-bad-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const server = createProxyServer(config, fakeFetch([]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const res = await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: { text: 'not json or headers' },
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.json.error.message.length > 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
+test('dashboard page renders with endpoint snippets', async () => {
+  await withServer([], async (config, port) => {
+    const res = await requestRaw(port, 'GET', '/');
+    assert.equal(res.status, 200);
+    assert.match(res.headers['content-type'], /text\/html/);
+    assert.match(res.text, /Factory 8090 Proxy/);
+    assert.match(res.text, /chat\/completions/);
+  });
 });
