@@ -95,36 +95,55 @@ export function envOverlayFromParsed(parsed) {
 
 
 const CSS = `
-:root { color-scheme: dark; --bg:#0e1116; --panel:#161b22; --line:#2d333b; --fg:#e6edf3; --dim:#8b949e; --ok:#3fb950; --warn:#d29922; --err:#f85149; --acc:#58a6ff; }
+:root { color-scheme: dark; --bg:#0a0c10; --panel:#10141b; --panel2:#161c26; --line:#232b37; --fg:#e6edf3; --dim:#93a1b0; --ok:#3fb950; --warn:#d29922; --err:#f85149; --acc:#58a6ff; --grad:linear-gradient(135deg,#58a6ff,#bc8cff); }
 * { box-sizing: border-box; margin: 0; }
-body { background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 24px; max-width: 980px; margin: 0 auto; }
-h1 { font-size: 20px; margin-bottom: 4px; }
-h1 span { color: var(--acc); }
-.sub { color: var(--dim); margin-bottom: 20px; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-.card h2 { font-size: 15px; margin-bottom: 10px; color: var(--acc); }
-.badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-.badge.ok { background: rgba(63,185,80,.15); color: var(--ok); }
-.badge.warn { background: rgba(210,153,34,.15); color: var(--warn); }
-.row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
-.stat { color: var(--dim); }
-.stat b { color: var(--fg); font-size: 16px; display: block; }
-textarea, input, select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 13px/1.45 ui-monospace, Consolas, monospace; }
-textarea { min-height: 130px; resize: vertical; }
-label { display: block; color: var(--dim); font-size: 12px; margin: 10px 0 4px; }
-button { background: #238636; color: #fff; border: 1px solid rgba(240,246,252,.1); border-radius: 8px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
-button:hover { background: #2ea043; }
-button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); font-weight: 400; padding: 4px 10px; font-size: 12px; }
-pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
-.msg { margin-top: 10px; font-size: 13px; }
-.msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
+body { background: var(--bg); background-image: radial-gradient(1100px 480px at 75% -12%, rgba(88,166,255,.10), transparent 60%), radial-gradient(800px 380px at 8% -4%, rgba(188,140,255,.07), transparent 60%); color: var(--fg); font: 15px/1.55 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; padding: 32px 24px 72px; max-width: 1040px; margin: 0 auto; -webkit-font-smoothing: antialiased; }
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
+.logo { width: 46px; height: 46px; border-radius: 13px; background: var(--grad); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px; color: #fff; letter-spacing: -0.5px; flex: none; box-shadow: 0 6px 18px rgba(88,166,255,.35); }
+h1 { font-size: 24px; letter-spacing: -0.3px; font-weight: 700; }
+h1 span { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sub { color: var(--dim); font-size: 13px; }
+p.sub { margin-bottom: 14px; }
+.card { background: linear-gradient(180deg, var(--panel2), var(--panel)); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 18px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 10px 30px rgba(0,0,0,.35); }
+.card h2 { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--dim); font-weight: 600; margin-bottom: 14px; }
+.badge { display: inline-block; padding: 3px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; vertical-align: middle; }
+.badge.ok { background: rgba(63,185,80,.14); color: var(--ok); box-shadow: inset 0 0 0 1px rgba(63,185,80,.35); }
+.badge.warn { background: rgba(210,153,34,.14); color: var(--warn); box-shadow: inset 0 0 0 1px rgba(210,153,34,.35); }
+.row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+.stat { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; color: var(--dim); font-size: 12px; }
+.stat b { color: var(--fg); font-size: 18px; display: block; font-variant-numeric: tabular-nums; }
 .models { display: flex; flex-wrap: wrap; gap: 6px; }
-.models code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+.models code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; font-size: 12px; color: var(--acc); font-family: ui-monospace, Consolas, monospace; }
+textarea, input, select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: 13px/1.5 ui-monospace, Consolas, monospace; transition: border-color .15s; }
+textarea:focus, input:focus, select:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 3px rgba(88,166,255,.12); }
+textarea { min-height: 140px; resize: vertical; }
+label { display: block; color: var(--dim); font-size: 12px; font-weight: 500; margin: 12px 0 5px; }
+button { background: linear-gradient(180deg, #2ea043, #238636); color: #fff; border: 1px solid rgba(240,246,252,.12); border-radius: 10px; padding: 9px 18px; font-weight: 600; font-size: 14px; cursor: pointer; box-shadow: 0 4px 14px rgba(46,160,67,.25); }
+button:hover { filter: brightness(1.12); }
+button:active { transform: translateY(1px); }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); font-weight: 500; padding: 5px 12px; font-size: 12px; box-shadow: none; }
+pre { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; overflow-x: auto; font: 12px/1.55 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; cursor: copy; transition: border-color .15s; }
+pre:hover { border-color: var(--acc); }
+pre:hover::after { content: "копировать"; position: absolute; top: 6px; right: 8px; font-size: 10px; color: var(--dim); background: var(--panel2); border: 1px solid var(--line); padding: 2px 7px; border-radius: 5px; font-family: -apple-system, "Segoe UI", sans-serif; }
+details { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); margin-bottom: 10px; overflow: hidden; }
+details summary { cursor: pointer; padding: 11px 14px; color: var(--fg); font-weight: 600; font-size: 13px; list-style: none; display: flex; align-items: center; gap: 9px; user-select: none; }
+details summary::-webkit-details-marker { display: none; }
+details summary::before { content: "▸"; color: var(--dim); transition: transform .15s; flex: none; }
+details[open] summary::before { transform: rotate(90deg); }
+details[open] summary { border-bottom: 1px solid var(--line); background: rgba(88,166,255,.05); }
+details > ol, details > p, details > pre, details > div { margin: 0 14px; padding-top: 12px; }
+details > :last-child { padding-bottom: 14px; }
+ol.sub { list-style: none; padding: 0; }
+ol.sub li { position: relative; padding-left: 34px; margin-bottom: 9px; color: var(--dim); font-size: 13.5px; }
+ol.sub li::before { content: counter(list-item); position: absolute; left: 0; top: 1px; width: 22px; height: 22px; border-radius: 7px; background: rgba(88,166,255,.12); color: var(--acc); font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(88,166,255,.25); }
+ol.sub li b { color: var(--fg); }
+.reco { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; background: rgba(63,185,80,.14); color: var(--ok); padding: 2px 8px; border-radius: 999px; margin-left: auto; flex: none; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
-details summary { cursor: pointer; color: var(--dim); margin-bottom: 8px; }
-#playout { white-space: pre-wrap; }
+.msg { margin-top: 12px; font-size: 13px; font-family: ui-monospace, Consolas, monospace; }
+.msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
+#playout { white-space: pre-wrap; min-height: 44px; margin-top: 12px; }
 .hidden { display: none; }
+@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } .row { gap: 8px; } .card { padding: 16px; } }
 `;
 
 const JS = `
@@ -162,6 +181,19 @@ async function applyCreds() {
 function copy(id) {
   const text = $(id).textContent;
   navigator.clipboard.writeText(text).then(() => { $(id).dataset.hint = 'copied!'; });
+}
+async function install(target) {
+  const msg = $('instmsg');
+  msg.textContent = 'Устанавливаю в ' + target + '…'; msg.className = 'msg';
+  try {
+    const res = await fetch('/dashboard/install', {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + KEY },
+      body: JSON.stringify({ target }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.message || data.error?.message || res.statusText);
+    msg.textContent = '✔ ' + (data.message || 'готово'); msg.className = 'msg ok';
+  } catch (e) { msg.textContent = '✖ ' + e.message; msg.className = 'msg err'; }
 }
 async function play() {
   $('playout').textContent = '…';
@@ -290,8 +322,13 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>${CSS}</style></head>
 <body>
-<h1>Factory <span>8090</span> Proxy</h1>
-<div class="sub">Локальный OpenAI-совместимый шлюз для factory.8090.ai &nbsp;·&nbsp; <span id="badge" class="badge warn">…</span></div>
+<header>
+  <div class="logo">F8</div>
+  <div>
+    <h1>Factory <span>8090</span> Proxy</h1>
+    <div class="sub">Локальный OpenAI-совместимый шлюз для factory.8090.ai &nbsp;·&nbsp; <span id="badge" class="badge warn">…</span></div>
+  </div>
+</header>
 
 <div class="card" id="readycard">
   <h2>Статус</h2>
@@ -307,7 +344,7 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
   <h2>Креды</h2>
   <p class="sub">Прокси стартует без кредов и ждёт их здесь. Вставь — подхватит на лету, без рестарта.</p>
 
-  <details open>
+  <details>
     <summary><b>Способ 1 — HAR-файл</b> (рекомендуется, куки и токены внутри)</summary>
     <ol class="sub">
       <li>Открой <b>factory.8090.ai</b> в Chrome и войди в аккаунт.</li>
@@ -339,8 +376,8 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
     </ol>
     <p class="sub" style="color: var(--warn)">⚠ Одних кук <b>недостаточно</b>: авторизация у factory идёт заголовками <b>authorization: Bearer …</b> и <b>x-sofa-cognito-id-token: …</b>, а куки вида posthog_* — только аналитика. Способ 3 годится как дополнение к способу 2 (вставь куки + заголовки в одно поле), сам по себе — нет.</p>
   </details>
-  <details>
-    <summary><b>Способ 4 — Команда в консоль</b> (авто-сбор, без ручного копирования)</summary>
+  <details open>
+    <summary><b>Способ 4 — Команда в консоль</b> (авто-сбор, без ручного копирования)<span class="reco">проще всего</span></summary>
     <ol class="sub">
       <li>Открой <b>factory.8090.ai</b> (войдя в аккаунт) и нажми <b>F12</b> → вкладка <b>Console</b>.</li>
       <li>Скопируй команду (клик по блоку ниже) и вставь её в консоль → <b>Enter</b>.</li>
@@ -365,6 +402,15 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
     <div><label>Base URL</label><pre id="curlurl" onclick="copy('curlurl')">${base}</pre></div>
     <div><label>API-ключ</label><pre id="curlkey" onclick="copy('curlkey')">${apiKey}</pre></div>
   </div>
+  <label style="margin-top:14px">Установить провайдер в CLI/IDE одним кликом (конфиг обновится сам, бэкап рядом)</label>
+  <div style="display:flex; gap:8px; flex-wrap:wrap">
+    <button class="ghost" onclick="install('opencode')">OpenCode</button>
+    <button class="ghost" onclick="install('cline')">Cline</button>
+    <button class="ghost" onclick="install('roo')">Roo Code</button>
+    <button class="ghost" onclick="install('continue')">Continue</button>
+    <button class="ghost" onclick="install('omp')">OMP</button>
+  </div>
+  <div class="msg" id="instmsg"></div>
   <details open><summary>curl</summary><pre id="curlsample" onclick="copy('curlsample')">${curl.replace(/</g, '&lt;')}</pre></details>
   <details><summary>Roo Code / Cline settings</summary><pre id="roosample" onclick="copy('roosample')">${roo.replace(/</g, '&lt;')}</pre></details>
   <details><summary>OMP models.yml</summary><pre id="ompsample" onclick="copy('ompsample')">${omp.replace(/</g, '&lt;')}</pre></details>
