@@ -1298,8 +1298,10 @@ function applyRuntimeConfig(target, fresh, fetchImpl) {
 }
 
 function loadFreshConfig(config, overlay, fetchImpl) {
-  const env = { ...(config.watchEnv || process.env), ...overlay,
-    PROXY_CONVERSATIONS_PATH: config.conversationPath };
+  const base = config.watchEnv || process.env;
+  const env = { ...base, ...overlay,
+    PROXY_CONVERSATIONS_PATH: config.conversationPath,
+    PROXY_API_KEY: base.PROXY_API_KEY || config.localApiKey };
   const fresh = loadConfig(env);
   applyRuntimeConfig(config, fresh, fetchImpl);
   config.modelCatalogRefresh = refreshModelCatalog(config, fetchImpl);
