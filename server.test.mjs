@@ -662,6 +662,66 @@ test('dashboard paste with garbage returns 400', async () => {
   }
 });
 
+test('cookie-export paste without auth tokens returns a clear 400', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-cookie-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const server = createProxyServer(config, fakeFetch([]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const res = await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: {
+        text: JSON.stringify([{ domain: '.8090.ai', name: 'ph_phc_x_posthog', value: '%7B%22distinct_id%22%3A%22abc%22%7D' }]),
+        url: 'https://factory.8090.ai/project/c35c2c08-af19-465a-863e-c969e36e5543',
+      },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.json.error.message, /authorization/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
+test('header paste with cookie line forwards cookie to Factory', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-cookie-h-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const seenHeaders = [];
+  const base = fakeFetch([deltaFrame('live'), doneFrame]);
+  const fetchImpl = (url, init) => { seenHeaders.push(init?.headers || {}); return base(url, init); };
+  const server = createProxyServer(config, fetchImpl);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const res = await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: {
+        text: 'authorization: Bearer tok-1\nx-sofa-cognito-id-token: cog-1\nx-zed-token: zed-1\nx-sofa-active-org-id: org-1\ncookie: ph=analytics; session=xyz',
+        url: `http://127.0.0.1:9/v2/project/${baseEnv.FACTORY_PROJECT_ID}/agents/chat-agent/input`,
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ready, true);
+    const completion = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ model: 'gpt-5.6-sol' }),
+    });
+    assert.equal(completion.status, 200);
+    assert.ok(seenHeaders.some(h => h.cookie === 'ph=analytics; session=xyz'),
+      'cookie header should be forwarded to Factory');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
 test('dashboard page renders with endpoint snippets', async () => {
   await withServer([], async (config, port) => {
     const res = await requestRaw(port, 'GET', '/');
