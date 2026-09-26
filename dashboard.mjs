@@ -155,8 +155,8 @@ async function refresh() {
     $('badge').textContent = s.ready ? 'live' : 'waiting for credentials';
     $('badge').className = 'badge ' + (s.ready ? 'ok' : 'warn');
     $('mcount').textContent = s.models ? s.models.length : 0;
+    $('acount').textContent = s.accounts ?? 0;
     $('sessions').textContent = s.sessions;
-    $('authexp').textContent = s.auth ? new Date(s.auth.expiresAt).toLocaleString() : '—';
     $('models').innerHTML = (s.models || []).map(m => '<code>' + m + '</code>').join('');
     const needCreds = !s.ready;
     $('credcard').classList.toggle('hidden', !needCreds);
@@ -175,7 +175,7 @@ async function applyCreds() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error?.message || res.statusText);
-    $('credmsg').textContent = 'Credentials applied — proxy is live.'; $('credmsg').className = 'msg ok';
+    $('credmsg').textContent = 'Credentials applied — proxy is live.' + (data.accounts ? ' Аккаунтов в пуле: ' + data.accounts + '.' : ''); $('credmsg').className = 'msg ok';
     refresh();
   } catch (e) { $('credmsg').textContent = e.message; $('credmsg').className = 'msg err'; }
 }
@@ -335,6 +335,7 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
   <h2>Статус</h2>
   <div class="row">
     <div class="stat"><b id="mcount">0</b>моделей</div>
+    <div class="stat"><b id="acount">0</b>аккаунтов</div>
     <div class="stat"><b id="sessions">0</b>активных сессий</div>
     <div class="stat"><b id="authexp">—</b>токен истекает</div>
   </div>
@@ -387,6 +388,7 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
     </ol>
     <pre id="cssnippet" style="max-height:220px;overflow:auto;cursor:pointer;white-space:pre-wrap;word-break:break-all" onclick="copy('cssnippet')">${CONSOLE_SNIPPET.replace(/</g, '&lt;')}</pre>
     <p class="sub">Клик по блоку — копирование. Команда безвредна: она только читает исходящий запрос, ничего не отправляет и не меняет.</p>
+    <p class="sub">💾 <b>Пул аккаунтов:</b> каждая вставка — это аккаунт. Повторная вставка с тем же логином обновляет его токены; вставка с другого логина добавляет новый аккаунт в пул. При 401 (токен истёк) прокси сам переключается на следующий аккаунт. Токены живут ~1 час — при 401 просто вставь свежий блок.</p>
   </details>
 
   <label for="credtext">HAR JSON, заголовки запроса или экспорт кук — всё в это поле (cookie строкой «cookie: …» или JSON-массивом)</label>
