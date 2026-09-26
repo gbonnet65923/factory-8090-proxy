@@ -117,6 +117,7 @@ export function loadConfig(env = process.env) {
     orgId: required(values, 'FACTORY_ORG_ID'),
     bearerToken,
     cognitoToken,
+    cookie: values.FACTORY_COOKIE?.trim() || null,
     authInitial,
     authSessionPath: values.FACTORY_SESSION_PATH,
     conversationPath: values.PROXY_CONVERSATIONS_PATH || defaultConversationPath,
@@ -674,7 +675,7 @@ function invalidToolCallRepairPrompt(tools, toolChoice, parallelToolCalls) {
 }
 
 function factoryHeaders(config, auth) {
-  return {
+  const headers = {
     accept: '*/*',
     'content-type': 'application/json',
     authorization: `Bearer ${auth?.accessToken || config.bearerToken}`,
@@ -685,6 +686,8 @@ function factoryHeaders(config, auth) {
     'x-zed-token': config.zedToken,
     'x-web-client-version': config.webClientVersion,
   };
+  if (config.cookie) headers.cookie = config.cookie;
+  return headers;
 }
 
 async function postFactory(config, endpoint, payload, signal, fetchImpl) {
