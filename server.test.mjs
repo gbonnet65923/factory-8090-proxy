@@ -707,6 +707,81 @@ test('cognito-only paste activates the proxy without PROXY_API_KEY in watchEnv',
   }
 });
 
+test('re-pasting the same account updates it instead of duplicating', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-dedupe-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const server = createProxyServer(config, fakeFetch([deltaFrame('live'), doneFrame]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const text = 'http://127.0.0.1:9/v2/project/project-pool/agents/chat-agent/input\nauthorization: Bearer ' + 'a'.repeat(40) + '\nx-sofa-cognito-id-token: cognito-pool\nx-zed-token: zed-pool\nx-sofa-active-org-id: org-pool';
+  try {
+    for (let i = 0; i < 2; i++) {
+      const res = await requestRaw(port, 'POST', '/dashboard/credentials', { body: { text } });
+      assert.equal(res.status, 200);
+      assert.equal(res.json.ready, true);
+    }
+    const status = await requestRaw(port, 'GET', '/v1/status');
+    assert.equal(status.json.accounts, 1);
+    const pool = JSON.parse(readFileSync(join(watchDir, 'factory-accounts.json'), 'utf8'));
+    assert.equal(pool.length, 1);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
+test('401 from Factory rotates to the next pooled account and succeeds', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-rotate-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const base = fakeFetch([deltaFrame('rotated'), doneFrame]);
+  const seenAuth = [];
+  let inputCalls = 0;
+  const fetchImpl = async (url, options) => {
+    if (url.includes('/agents/chat-agent/input')) {
+      inputCalls += 1;
+      seenAuth.push(options.headers.authorization);
+      if (inputCalls === 1) {
+        return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 });
+      }
+    }
+    return base(url, options);
+  };
+  const server = createProxyServer(config, fetchImpl);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const headers = token => 'x-sofa-cognito-id-token: cognito-' + token + '\nx-zed-token: zed-pool\nx-sofa-active-org-id: org-pool';
+  try {
+    await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: { text: 'http://127.0.0.1:9/v2/project/project-pool/agents/chat-agent/input\nauthorization: Bearer ' + 'a'.repeat(40) + '\n' + headers('aaa') },
+    });
+    await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: { text: 'http://127.0.0.1:9/v2/project/project-pool/agents/chat-agent/input\nauthorization: Bearer ' + 'b'.repeat(40) + '\n' + headers('bbb') },
+    });
+    const status = await requestRaw(port, 'GET', '/v1/status');
+    assert.equal(status.json.accounts, 2);
+    const completion = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ model: 'gpt-5.6-sol' }),
+    });
+    assert.equal(completion.status, 200);
+    assert.equal(completion.json.choices[0].message.content, 'rotated');
+    assert.equal(seenAuth.length, 2);
+    assert.equal(seenAuth[0], 'Bearer ' + 'b'.repeat(40));
+    assert.equal(seenAuth[1], 'Bearer ' + 'a'.repeat(40));
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
 test('dashboard paste with garbage returns 400', async () => {
   const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-bad-'));
   const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
