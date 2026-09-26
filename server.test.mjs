@@ -640,6 +640,41 @@ test('dashboard header paste activates the proxy live', async () => {
   }
 });
 
+test('dashboard paste with URL as first line and headers in one blob activates the proxy', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-urlblob-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  config.watchEnv = { ...baseEnv };
+  config.watchDir = watchDir;
+  const server = createProxyServer(config, fakeFetch([deltaFrame('live'), doneFrame]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const res = await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: {
+        text: 'http://127.0.0.1:9/v2/project/project-urlblob/agents/chat-agent/input\nauthorization: Bearer bearer-har\nx-sofa-cognito-id-token: cognito-har\nx-zed-token: zed-har\nx-sofa-active-org-id: org-har',
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ready, true);
+    const completion = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ model: 'gpt-5.6-sol' }),
+    });
+    assert.equal(completion.status, 200);
+    assert.equal(completion.json.choices[0].message.content, 'live');
+    const saved = readFileSync(join(watchDir, 'factory-credentials.json'), 'utf8');
+    const parsed = JSON.parse(saved);
+    assert.equal(parsed.projectId, 'project-urlblob');
+    assert.ok(parsed.headers.authorization === 'Bearer bearer-har');
+    assert.ok(!('https' in parsed.headers), 'URL line must not become a junk header');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
 test('dashboard paste with garbage returns 400', async () => {
   const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-bad-'));
   const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
