@@ -159,7 +159,7 @@ async function refresh() {
     $('sessions').textContent = s.sessions;
     $('models').innerHTML = (s.models || []).map(m => '<code>' + m + '</code>').join('');
     const needCreds = !s.ready;
-    $('credcard').classList.toggle('hidden', !needCreds);
+    $('credcard').classList.remove('hidden');
     $('readycard').classList.toggle('hidden', needCreds);
     const sel = $('pmodel');
     const current = sel.value;
