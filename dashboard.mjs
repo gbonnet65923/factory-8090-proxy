@@ -12,27 +12,52 @@ function parseHeaderBlock(text) {
 }
 
 function projectIdFromUrl(raw) {
-  try { return new URL(raw).pathname.match(/^\/v2\/project\/([^/]+)\/agents/)?.[1]; }
+  try {
+    const path = new URL(raw).pathname;
+    return path.match(/^\/v2\/project\/([^/]+)\/agents/)?.[1]
+      || path.match(/^\/project\/([^/]+)$/)?.[1];
+  }
   catch { return undefined; }
 }
 
-// Auto-detects what the user pasted: a HAR JSON document, a URL, or a
-// copied request-header block. Returns an env overlay for loadConfig.
+// Auto-detects what the user pasted: a HAR JSON document, a cookie-export
+// JSON array (Cookie-Editor / EditThisCookie extension format), a URL, or a
+// copied request-header block. Returns a parse result for envOverlayFromParsed.
+function cookieFromExport(json) {
+  const arr = Array.isArray(json) ? json : [json];
+  const pairs = arr
+    .filter(item => item && typeof item === 'object' && typeof item.name === 'string' && item.value != null)
+    .map(item => `${item.name}=${item.value}`);
+  return pairs.length ? pairs.join('; ') : null;
+}
+
 export function parseCredentialPaste(text, urlHint = '') {
   const trimmed = String(text || '').trim();
-  if (!trimmed) throw new Error('Paste a HAR JSON export or copied request headers');
+  if (!trimmed) throw new Error('Вставь HAR-файл, заголовки запроса или экспорт кук — инструкции выше');
 
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    let har;
-    try { har = JSON.parse(trimmed); }
-    catch { throw new Error('The pasted text looks like JSON but is not valid JSON'); }
-    if (!har?.log?.entries) throw new Error('The pasted JSON is not a HAR document (no log.entries)');
-    return { kind: 'har', har };
+    let json;
+    try { json = JSON.parse(trimmed); }
+    catch { throw new Error('Текст похож на JSON, но JSON невалиден — скопируй файл/заголовки целиком'); }
+    if (json?.log?.entries) return { kind: 'har', har: json };
+    const cookie = cookieFromExport(json);
+    if (cookie) {
+      // Cookie-Editor export: no auth tokens in it — keep parsing as headers,
+      // envOverlayFromParsed will ask for authorization if it is missing.
+      const urlMatch = urlHint || '';
+      const projectId = projectIdFromUrl(urlMatch);
+      const originMatch = urlMatch.match(/^https?:\/\/[^/]+/)?.[0];
+      const result = { kind: 'headers', headers: { cookie } };
+      if (projectId) result.projectId = projectId;
+      if (originMatch) result.apiBase = originMatch;
+      return result;
+    }
+    throw new Error('JSON — не HAR (нет log.entries) и не экспорт кук (нет name/value)');
   }
 
   const headers = parseHeaderBlock(trimmed);
   if (!headers.authorization && !headers['x-sofa-cognito-id-token'] && !headers.cookie) {
-    throw new Error('Could not find authorization, x-sofa-cognito-id-token, or cookie in the pasted headers');
+    throw new Error('В заголовках нет authorization / x-sofa-cognito-id-token / cookie — скопируй секцию Request Headers из DevTools целиком');
   }
   const urlMatch = urlHint || trimmed.match(/https?:\/\/[^\s]+\/v2\/project\/[^\s]+\/agents[^\s]*/)?.[0] || '';
   const projectId = projectIdFromUrl(urlMatch);
@@ -47,7 +72,11 @@ export function envOverlayFromParsed(parsed) {
   const h = parsed.headers || {};
   const bearer = h.authorization?.replace(/^Bearer\s+/i, '');
   if (!bearer && !h['x-sofa-cognito-id-token']) {
-    throw new Error('Header credentials need an authorization bearer or x-sofa-cognito-id-token header');
+    throw new Error(
+      'Кук недостаточно: factory.8090.ai авторизуется заголовками authorization: Bearer … и x-sofa-cognito-id-token: … ' +
+      '(куки из расширения, включая posthog, — аналитические и токенов не содержат). ' +
+      'Скопируй Request Headers из DevTools (F12 → Network → POST …/input → Headers) или вставь HAR с sensitive data'
+    );
   }
   if (!parsed.projectId) throw new Error('Header credentials need the request URL (contains the project id) — paste it in the URL field');
   return {
@@ -57,10 +86,12 @@ export function envOverlayFromParsed(parsed) {
     FACTORY_BEARER_TOKEN: bearer || '',
     FACTORY_COGNITO_TOKEN: h['x-sofa-cognito-id-token'] || '',
     FACTORY_ZED_TOKEN: h['x-zed-token'] || '',
+    FACTORY_COOKIE: h.cookie || '',
     FACTORY_WEB_CLIENT_VERSION: h['x-web-client-version'] || '0.53.7',
     FACTORY_MODEL_KEY: 'gpt-5.6-sol',
   };
 }
+
 
 const CSS = `
 :root { color-scheme: dark; --bg:#0e1116; --panel:#161b22; --line:#2d333b; --fg:#e6edf3; --dim:#8b949e; --ok:#3fb950; --warn:#d29922; --err:#f85149; --acc:#58a6ff; }
@@ -225,10 +256,44 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
 
 <div class="card" id="credcard">
   <h2>Креды</h2>
-  <p class="sub">Вставь HAR-экспорт (DevTools → Network → Save all as HAR with content) или скопированные заголовки запроса из factory.8090.ai. Прокси подхватит их без рестарта.</p>
-  <label for="credtext">HAR JSON или заголовки запроса</label>
-  <textarea id="credtext" placeholder='{"log":{"entries":[…]}}  —  или  authorization: Bearer eyJ…&#10;x-sofa-cognito-id-token: eyJ…&#10;x-zed-token: …&#10;x-sofa-active-org-id: …'></textarea>
-  <label for="credurl">URL запроса (для заголовков — обязательно: https://api.factory.8090.dev/v2/project/&lt;id&gt;/agents/chat-agent/input)</label>
+  <p class="sub">Прокси стартует без кредов и ждёт их здесь. Вставь — подхватит на лету, без рестарта.</p>
+
+  <details open>
+    <summary><b>Способ 1 — HAR-файл</b> (рекомендуется, куки и токены внутри)</summary>
+    <ol class="sub">
+      <li>Открой <b>factory.8090.ai</b> в Chrome и войди в аккаунт.</li>
+      <li>F12 → вкладка <b>Network</b> (Сеть). Отправь боту любое сообщение.</li>
+      <li>Клик правой кнопкой по любому запросу в списке → <b>«Save all as HAR with sensitive data»</b> (Сохранить всё как HAR с конфиденциальными данными).<br>Важно: нужен именно вариант <i>with sensitive data</i> — обычный HAR не содержит токенов.</li>
+      <li>Открой сохранённый .har файл блокнотом → Ctrl+A, Ctrl+C.</li>
+      <li>Вставь всё в поле ниже → <b>Применить</b>. URL не нужен.</li>
+    </ol>
+  </details>
+
+  <details>
+    <summary><b>Способ 2 — Заголовки запроса + куки</b> (вручную)</summary>
+    <ol class="sub">
+      <li>Открой <b>factory.8090.ai</b> в Chrome и войди в аккаунт.</li>
+      <li>F12 → вкладка <b>Network</b> → отправь боту любое сообщение.</li>
+      <li>Найди запрос <b>POST …/agents/chat-agent/input</b> → клик по нему → вкладка <b>Headers</b> (Заголовки).</li>
+      <li>В секции <b>Request Headers</b> скопируй <b>все строки</b> — включая строку <b>cookie: …</b> (куки идут сюда же, отдельного поля не нужно).<br>Проще всего: правый клик по списку заголовков → «Copy value»/выделить всё и скопировать.</li>
+      <li>Вставь в поле ниже. Обязательно нужны строки <b>authorization: Bearer …</b> или <b>x-sofa-cognito-id-token: …</b>.</li>
+      <li>В поле <b>URL запроса</b> скопируй адрес из шапки того же запроса (там есть project id) → <b>Применить</b>.</li>
+    </ol>
+  </details>
+
+  <details>
+    <summary><b>Способ 3 — Куки из расширения</b> (формат Cookie-Editor / EditThisCookie JSON)</summary>
+    <ol class="sub">
+      <li>Поставь в Chrome расширение <b>Cookie-Editor</b>, открой <b>factory.8090.ai</b> (войдя в аккаунт).</li>
+      <li>Клик по иконке расширения → <b>Export</b> (JSON) → вставь массив кук в поле ниже.</li>
+      <li>Вставь также <b>URL</b> страницы в поле URL.</li>
+    </ol>
+    <p class="sub" style="color: var(--warn)">⚠ Одних кук <b>недостаточно</b>: авторизация у factory идёт заголовками <b>authorization: Bearer …</b> и <b>x-sofa-cognito-id-token: …</b>, а куки вида posthog_* — только аналитика. Способ 3 годится как дополнение к способу 2 (вставь куки + заголовки в одно поле), сам по себе — нет.</p>
+  </details>
+
+  <label for="credtext">HAR JSON, заголовки запроса или экспорт кук — всё в это поле (cookie строкой «cookie: …» или JSON-массивом)</label>
+  <textarea id="credtext" placeholder='{"log":{"entries":[…]}}  —  HAR целиком&#10;&#10;либо заголовки:&#10;authorization: Bearer eyJ…&#10;x-sofa-cognito-id-token: eyJ…&#10;cookie: __Host-session=…; other=…&#10;x-sofa-active-org-id: …&#10;&#10;либо куки из расширения:&#10;[{"domain":".8090.ai","name":"…","value":"…"}]'></textarea>
+  <label for="credurl">URL запроса — нужен для способов 2 и 3: https://api.factory.8090.dev/v2/project/&lt;id&gt;/agents/chat-agent/input (для способа 3 можно URL страницы: https://factory.8090.ai/project/&lt;id&gt;)</label>
   <input id="credurl" placeholder="https://api.factory.8090.dev/v2/project/.../agents/chat-agent/input">
   <div style="margin-top:10px"><button onclick="applyCreds()">Применить</button></div>
   <div class="msg" id="credmsg"></div>
@@ -250,6 +315,7 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
 
 <div class="card">
   <h2>Playground</h2>
+<p class="sub" style="margin-bottom:10px">Модели и выбор появятся, как только вставишь креды выше (сейчас прокси ждёт авторизацию).</p>
   <div class="grid">
     <div><label>Модель</label><select id="pmodel"></select></div>
     <div><label>reasoning_effort</label>
