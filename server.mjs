@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { readFileSync, writeFileSync, readdirSync, statSync, watch } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, watch, existsSync, copyFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import { authFromHar, createFactoryAuth } from './factory-auth.mjs';
@@ -1345,6 +1346,87 @@ function readSavedCredentials(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
 }
 
+// Writes the proxy provider into local CLI/IDE config files (one click from
+// the dashboard). Always backs up the file first; JSON targets are merged,
+// YAML targets only created or verified (no risky text surgery).
+function installCliTarget(target, { base, apiKey, models }) {
+  const stamp = '.bak-factory8090';
+  const mergeJsonFile = (filePath, mutate) => {
+    let data = {};
+    if (existsSync(filePath)) {
+      try { data = JSON.parse(readFileSync(filePath, 'utf8')); }
+      catch (error) {
+        return { ok: false, message: filePath + ' не парсится как JSON (' + error.message + ') — файл не тронут, вставь блок из карточки «Эндпоинт» вручную' };
+      }
+      copyFileSync(filePath, filePath + stamp);
+    } else {
+      mkdirSync(dirname(filePath), { recursive: true });
+    }
+    const note = mutate(data) || 'ok';
+    writeFileSync(filePath, JSON.stringify(data, null, 2));
+    return { ok: true, message: filePath + ' обновлён' + (existsSync(filePath + stamp) ? ' (бэкап: ' + filePath + stamp + ')' : '') + '. ' + note };
+  };
+  const vsSettings = join(homedir(), 'AppData', 'Roaming', 'Code', 'User', 'settings.json');
+  switch (target) {
+    case 'opencode':
+      return mergeJsonFile(join(homedir(), '.config', 'opencode', 'opencode.json'), (data) => {
+        data.provider = data.provider || {};
+        data.provider.factory8090 = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Factory 8090',
+          options: { baseURL: base, apiKey },
+          models: Object.fromEntries(models.map(m => [m, { name: m, limit: { context: 200000, output: 32000 } }])),
+        };
+        return 'провайдер factory8090 записан; выбери его в OpenCode (Models → Factory 8090)';
+      });
+    case 'cline':
+      return mergeJsonFile(vsSettings, (data) => {
+        data['cline.apiProvider'] = 'openai-compatible';
+        data['cline.openAiBaseUrl'] = base;
+        data['cline.openAiApiKey'] = apiKey;
+        data['cline.openAiModelId'] = models[0];
+        return 'ключи cline.* записаны в settings.json VS Code; перезапусти окно VS Code';
+      });
+    case 'roo':
+      return mergeJsonFile(vsSettings, (data) => {
+        data['roo-cline.apiProvider'] = 'openai-compatible';
+        data['roo-cline.openAiBaseUrl'] = base;
+        data['roo-cline.openAiApiKey'] = apiKey;
+        data['roo-cline.openAiModelId'] = models[0];
+        return 'ключи roo-cline.* записаны в settings.json VS Code; перезапусти окно VS Code';
+      });
+    case 'continue': {
+      const filePath = join(homedir(), '.continue', 'config.yaml');
+      const providerBlock = '\nproviders:\n  factory8090:\n    npm: \'@continuedev/openai\'\n    apiBase: ' + base + '\n    apiKey: ' + apiKey + '\n';
+      if (existsSync(filePath)) {
+        const raw = readFileSync(filePath, 'utf8');
+        if (raw.includes('factory8090')) return { ok: true, message: filePath + ' уже содержит провайдер factory8090 — ничего не менял' };
+        if (/^providers:/m.test(raw) || /^models:/m.test(raw)) {
+          copyFileSync(filePath, filePath + stamp);
+          writeFileSync(filePath, raw + '\n  # factory8090 — см. блок в дашборде, вставь в существующую секцию providers/models\n');
+          return { ok: false, message: filePath + ' уже имеет секции providers/models — допиши блок из карточки «Эндпоинт» вручную (бэкап сделан)' };
+        }
+        copyFileSync(filePath, filePath + stamp);
+        writeFileSync(filePath, raw + '\nmodels:\n' + models.map(m => '  - name: ' + m + '\n    provider: factory8090\n    roles: [chat, edit, apply]\n    model: ' + m + '\n    apiKey: ' + apiKey + '\n').join('') + providerBlock);
+        return { ok: true, message: filePath + ' дополнен (бэкап: ' + filePath + stamp + ')' };
+      }
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, 'name: Factory 8090 Proxy\nversion: 1.0.0\nschema: v1\nmodels:\n' + models.map(m => '  - name: ' + m + '\n    provider: factory8090\n    roles: [chat, edit, apply]\n    model: ' + m + '\n    apiKey: ' + apiKey + '\n').join('') + providerBlock + '\n');
+      return { ok: true, message: filePath + ' создан с нуля' };
+    }
+    case 'omp': {
+      const filePath = join(homedir(), '.omp', 'agent', 'models.yml');
+      if (!existsSync(filePath)) return { ok: false, message: filePath + ' не найден — OMP не установлен?' };
+      const raw = readFileSync(filePath, 'utf8');
+      return raw.includes('hermes-factory8090')
+        ? { ok: true, message: 'OMP уже подключён (hermes-factory8090 в models.yml); проверь enabledModels в config.yml' }
+        : { ok: false, message: 'hermes-factory8090 не найден в models.yml — вставь блок из карточки «Эндпоинт» (секция OMP models.yml)' };
+    }
+    default:
+      throw new Error('Неизвестный target: ' + target);
+  }
+}
+
 export function createProxyServer(config, fetchImpl = fetch) {
   const conversations = createConversationStore(config.conversationPath);
   if (config.authInitial && !config.authSession) {
@@ -1400,6 +1482,21 @@ export function createProxyServer(config, fetchImpl = fetch) {
     }
     if (!authorized(req, config.localApiKey)) {
       sendJson(res, 401, { error: { message: 'Invalid local API key', type: 'authentication_error' } });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/dashboard/install') {
+      try {
+        const body = await readJson(req);
+        const result = installCliTarget(body.target, {
+          base: `http://127.0.0.1:${serverPort}/v1`,
+          apiKey: config.localApiKey,
+          models: (config.modelKeys?.length ? config.modelKeys : ['gpt-5.6-sol']),
+        });
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { ok: false, message: error.message });
+      }
       return;
     }
     if (req.method === 'GET' && pathname === '/v1/models') {
