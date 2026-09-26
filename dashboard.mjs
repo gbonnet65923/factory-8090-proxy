@@ -3,6 +3,7 @@
 function parseHeaderBlock(text) {
   const headers = {};
   for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('http')) continue; // URL line pasted together with headers
     const match = line.match(/^([A-Za-z0-9-]+)\s*:\s*(.*)$/);
     if (!match) continue;
     const name = match[1].toLowerCase();
@@ -206,6 +207,54 @@ async function playStream(body) {
 refresh(); setInterval(refresh, 5000);
 `;
 
+// DevTools console one-liner: hooks fetch/XHR on factory.8090.ai, captures the
+// auth headers of the next chat-agent/input request and copies them (with the
+// URL as the first line) so the whole thing can be pasted into one field.
+const CONSOLE_SNIPPET = [
+  '(() => {',
+  '  const emit = (url, h) => {',
+  '    const lines = Object.keys(h).map(k => k + ": " + h[k]);',
+  '    const text = url + "\\n" + lines.join("\\n");',
+  '    window.__FACTORY_CREDENTIALS__ = text;',
+  '    try { navigator.clipboard.writeText(text);',
+  '      console.log("%c\\u2714 \\u0413\\u043e\\u0442\\u043e\\u0432\\u043e \\u2014 \\u043a\\u0440\\u0435\\u0434\\u044b \\u0432 \\u0431\\u0443\\u0444\\u0435\\u0440\\u0435. \\u0412\\u0441\\u0442\\u0430\\u0432\\u044c \\u0432\\u0441\\u0451 \\u0432 \\u043e\\u0434\\u043d\\u043e \\u043f\\u043e\\u043b\\u0435 \\u043d\\u0430 \\u0434\\u0430\\u0448\\u0431\\u043e\\u0440\\u0434\\u0435.", "color:#3fb950;font-size:14px"); }',
+  '    catch (e) { console.log("\\u0421\\u043a\\u043e\\u043f\\u0438\\u0440\\u0443\\u0439 \\u0432\\u0440\\u0443\\u0447\\u043d\\u0443\\u044e \\u0438\\u0437 \\u043b\\u043e\\u0433\\u0430 \\u043d\\u0438\\u0436\\u0435:"); }',
+  '    console.log(text);',
+  '  };',
+  '  const of = window.fetch;',
+  '  window.fetch = function(input, init) {',
+  '    try {',
+  '      init = init || {};',
+  '      const url = typeof input === "string" ? input : (input && input.url) || "";',
+  '      if (/chat-agent\\/input/.test(url)) {',
+  '        const h = {};',
+  '        if (init.headers && typeof init.headers.forEach === "function") init.headers.forEach(function(v, k) { h[k] = v; });',
+  '        else if (init.headers) Object.assign(h, init.headers);',
+  '        emit(url, h);',
+  '      }',
+  '    } catch (e) {}',
+  '    return of.apply(this, arguments);',
+  '  };',
+  '  const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.setRequestHeader, osd = XMLHttpRequest.prototype.send;',
+  '  XMLHttpRequest.prototype.open = function(m, u) { this.__furl = u; return oo.apply(this, arguments); };',
+  '  XMLHttpRequest.prototype.setRequestHeader = function(k, v) {',
+  '    if (this.__furl && /chat-agent\\/input/.test(this.__furl)) (this.__fh = this.__fh || {})[k] = v;',
+  '    return os.apply(this, arguments);',
+  '  };',
+  '  XMLHttpRequest.prototype.send = function() {',
+  '    if (this.__furl && this.__fh) emit(this.__furl, this.__fh);',
+  '    return osd.apply(this, arguments);',
+  '  };',
+  '  const found = [];',
+  '  for (let i = 0; i < localStorage.length; i++) {',
+  '    const k = localStorage.key(i), v = localStorage.getItem(k);',
+  '    if (/^eyJ/.test(v) || /token/i.test(k)) found.push(k);',
+  '  }',
+  '  if (found.length) console.log("\\u041a\\u043b\\u044e\\u0447\\u0438 localStorage \\u0441 \\u0442\\u043e\\u043a\\u0435\\u043d\\u0430\\u043c\\u0438: " + found.join(", "));',
+  '  console.log("%c\\u{1F3A4} \\u0425\\u0443\\u043a \\u0443\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u043b\\u0435\\u043d. \\u0422\\u0435\\u043f\\u0435\\u0440\\u044c \\u043e\\u0442\\u043f\\u0440\\u0430\\u0432\\u044c \\u0431\\u043e\\u0442\\u0443 \\u043b\\u044e\\u0431\\u043e\\u0435 \\u0441\\u043e\\u043e\\u0431\\u0449\\u0435\\u043d\\u0438\\u0435 \\u2014 \\u043a\\u0440\\u0435\\u0434\\u044b \\u0441\\u043e\\u0431\\u0435\\u0440\\u0443\\u0442\\u0441\\u044f \\u0441\\u0430\\u043c\\u0438.", "color:#58a6ff;font-size:14px");',
+  '})();',
+].join('\\n');
+
 export function renderDashboardPage({ port, apiKey, models = [] }) {
   const base = `http://127.0.0.1:${port}/v1`;
   const curl = `curl ${base}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${models[0] || 'gpt-5.6-sol'}","messages":[{"role":"user","content":"Say OK"}]}'`;
@@ -289,6 +338,17 @@ export function renderDashboardPage({ port, apiKey, models = [] }) {
       <li>Вставь также <b>URL</b> страницы в поле URL.</li>
     </ol>
     <p class="sub" style="color: var(--warn)">⚠ Одних кук <b>недостаточно</b>: авторизация у factory идёт заголовками <b>authorization: Bearer …</b> и <b>x-sofa-cognito-id-token: …</b>, а куки вида posthog_* — только аналитика. Способ 3 годится как дополнение к способу 2 (вставь куки + заголовки в одно поле), сам по себе — нет.</p>
+  </details>
+  <details>
+    <summary><b>Способ 4 — Команда в консоль</b> (авто-сбор, без ручного копирования)</summary>
+    <ol class="sub">
+      <li>Открой <b>factory.8090.ai</b> (войдя в аккаунт) и нажми <b>F12</b> → вкладка <b>Console</b>.</li>
+      <li>Скопируй команду (клик по блоку ниже) и вставь её в консоль → <b>Enter</b>.</li>
+      <li>Отправь боту <b>любое сообщение</b> — команда перехватит запрос к API и сама скопирует URL и все auth-заголовки в буфер обмена.</li>
+      <li>Вернись сюда и вставь всё <b>одним куском</b> в поле ниже (URL будет первой строкой, отдельное поле URL не нужно).</li>
+    </ol>
+    <pre id="cssnippet" style="max-height:220px;overflow:auto;cursor:pointer;white-space:pre-wrap;word-break:break-all" onclick="copy('cssnippet')">${CONSOLE_SNIPPET.replace(/</g, '&lt;')}</pre>
+    <p class="sub">Клик по блоку — копирование. Команда безвредна: она только читает исходящий запрос, ничего не отправляет и не меняет.</p>
   </details>
 
   <label for="credtext">HAR JSON, заголовки запроса или экспорт кук — всё в это поле (cookie строкой «cookie: …» или JSON-массивом)</label>
