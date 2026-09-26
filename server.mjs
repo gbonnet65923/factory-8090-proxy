@@ -1,8 +1,10 @@
 import http from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, watch } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { basename, dirname, join } from 'node:path';
 import { authFromHar, createFactoryAuth } from './factory-auth.mjs';
+import { parseCredentialPaste, envOverlayFromParsed, renderDashboardPage } from './dashboard.mjs';
 import { createConversationStore } from './conversations.mjs';
 
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
@@ -130,6 +132,7 @@ export function loadConfig(env = process.env) {
     contextWindow: values.FACTORY_CONTEXT_WINDOW || 'default',
     generationMode: values.FACTORY_GENERATION_MODE || 'standard',
     servingSource: values.FACTORY_SERVING_SOURCE || 'platform',
+    ready: true,
     clientSessionId: randomUUID(),
     port,
   };
@@ -420,6 +423,10 @@ function validateCompletion(body, config) {
   if (body.response_format || body.modalities || body.audio || body.stop || (body.n !== undefined && body.n !== 1)) {
     throw new ProxyError(400, 'Requested output format or options are not supported by this proxy');
   }
+  const effort = body.reasoning_effort;
+  if (effort !== undefined && !['minimal', 'low', 'medium', 'high', 'none'].includes(effort)) {
+    throw new ProxyError(400, 'reasoning_effort must be one of minimal, low, medium, high, none');
+  }
   const messages = normalizeMessages(body.messages);
   const activeTools = choice === 'none' ? [] : tools;
   return {
@@ -429,9 +436,11 @@ function validateCompletion(body, config) {
     tools: activeTools,
     toolChoice: choice,
     parallelToolCalls: body.parallel_tool_calls !== false,
+    thinkingLevel: effort === undefined || effort === null || effort === 'none'
+      ? null
+      : ({ minimal: 'low', low: 'low', medium: 'medium', high: 'high' })[effort] || 'medium',
   };
 }
-
 function invalidToolCall(reason) {
   const messages = {
     'malformed tool call JSON': 'Factory returned malformed tool call JSON',
@@ -812,7 +821,7 @@ function estimateUsage(promptText, completionText) {
   };
 }
 
-async function openFactoryEvents(config, model, prompt, signal, fetchImpl, conversationId = randomUUID(), clientMessageId = randomUUID(), onInputAccepted = null) {
+async function openFactoryEvents(config, model, prompt, signal, fetchImpl, conversationId = randomUUID(), clientMessageId = randomUUID(), onInputAccepted = null, requestThinkingLevel = null) {
   const input = await postFactoryInput(config, {
     action: 'send_message',
     conversation_id: conversationId,
@@ -824,7 +833,7 @@ async function openFactoryEvents(config, model, prompt, signal, fetchImpl, conve
     model: {
       type: 'specific', model_key: model,
       configuration: {
-        thinking_level: config.thinkingLevelOverride || config.modelSettings[model]?.thinkingLevel || config.thinkingLevel,
+        thinking_level: requestThinkingLevel || config.thinkingLevelOverride || config.modelSettings[model]?.thinkingLevel || config.thinkingLevel,
         context_window: config.contextWindow,
         generation_mode: config.generationMode,
         serving_source: config.servingSource,
@@ -875,7 +884,10 @@ export function extractRequestId(req, body = {}) {
 
 async function handleCompletion(req, res, config, fetchImpl, conversations) {
   const body = await readJson(req);
-  const { model, messages, stream, tools, toolChoice, parallelToolCalls } = validateCompletion(body, config);
+  if (config.ready === false) {
+    throw new ProxyError(503, `Proxy is waiting for Factory credentials. Open http://127.0.0.1:${config.port}/ and paste a HAR or request headers.`, 'not_ready_error');
+  }
+  const { model, messages, stream, tools, toolChoice, parallelToolCalls, thinkingLevel } = validateCompletion(body, config);
   const taskId = extractTaskId(req, body);
   const requestId = extractRequestId(req, body);
   const selection = conversations.select(model, messages, {
@@ -960,7 +972,8 @@ async function handleCompletion(req, res, config, fetchImpl, conversations) {
       const events = await openFactoryEvents(
         config, model, incremental, aborter.signal, fetchImpl,
         session.conversationId, session.clientMessageId,
-        () => { factoryInputAccepted = true; }
+        () => { factoryInputAccepted = true; },
+        thinkingLevel
       );
 
       if (tools.length) {
@@ -1255,12 +1268,86 @@ async function refreshModelCatalog(config, fetchImpl) {
   }
 }
 
+// --- Live credential reload (HAR drop, dashboard paste, saved file) --------
+
+const CREDENTIALS_FILE = 'factory-credentials.json';
+
+function envOverlayFromHar(harPath, sessionPath) {
+  const overlay = { ...settingsFromHar(harPath), FACTORY_HAR_PATH: harPath };
+  try {
+    authFromHar(harPath); // only set when this HAR carries a Cognito refresh token
+    overlay.FACTORY_AUTH_HAR_PATH = harPath;
+    overlay.FACTORY_SESSION_PATH = sessionPath;
+  } catch { /* headers-only HAR: bearer from headers stays valid until it expires */ }
+  return overlay;
+}
+
+function applyRuntimeConfig(target, fresh, fetchImpl) {
+  for (const key of Object.keys(fresh)) {
+    if (key === 'authSession' || key === 'modelCatalogRefresh' || key === 'conversationPath' || key === 'port') continue;
+    target[key] = fresh[key];
+  }
+  target.authSession = fresh.authInitial
+    ? createFactoryAuth(fresh.authInitial, fresh.authSessionPath, fetchImpl)
+    : null;
+  target.ready = true;
+}
+
+function loadFreshConfig(config, overlay, fetchImpl) {
+  const env = { ...(config.watchEnv || process.env), ...overlay,
+    PROXY_CONVERSATIONS_PATH: config.conversationPath };
+  const fresh = loadConfig(env);
+  applyRuntimeConfig(config, fresh, fetchImpl);
+  config.modelCatalogRefresh = refreshModelCatalog(config, fetchImpl);
+}
+
+function probeHarFiles(config, fetchImpl) {
+  const files = readdirSync(config.watchDir)
+    .filter(name => name.endsWith('.har'))
+    .map(name => join(config.watchDir, name))
+    .filter(file => { try { return statSync(file).isFile(); } catch { return false; } })
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  const sessionPath = config.conversationPath
+    ? join(dirname(config.conversationPath), 'factory-session.json')
+    : join(config.watchDir, 'factory-session.json');
+  for (const file of files) {
+    try {
+      loadFreshConfig(config, envOverlayFromHar(file, sessionPath), fetchImpl);
+      console.log(`Factory credentials loaded from ${basename(file)}; proxy is live`);
+      return true;
+    } catch (error) {
+      console.info(`Ignoring ${basename(file)}: ${error.message}`);
+    }
+  }
+  return false;
+}
+
+function startHarWatcher(config, server, fetchImpl) {
+  let timer = null;
+  const trigger = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { try { probeHarFiles(config, fetchImpl); } catch { /* keep old config */ } }, 500);
+  };
+  try {
+    const watcher = watch(config.watchDir, { persistent: false }, (event, filename) => {
+      if (typeof filename === 'string' && !filename.toLowerCase().endsWith('.har')) return;
+      trigger();
+    });
+    watcher.unref?.();
+    server.on('close', () => { clearTimeout(timer); watcher.close(); });
+  } catch { /* watching unavailable: manual dashboard paste still works */ }
+}
+
+function readSavedCredentials(path) {
+  try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+}
+
 export function createProxyServer(config, fetchImpl = fetch) {
   const conversations = createConversationStore(config.conversationPath);
   if (config.authInitial && !config.authSession) {
     config.authSession = createFactoryAuth(config.authInitial, config.authSessionPath, fetchImpl);
   }
-  config.modelCatalogRefresh = refreshModelCatalog(config, fetchImpl);
+  if (config.ready !== false) config.modelCatalogRefresh = refreshModelCatalog(config, fetchImpl);
   const server = http.createServer(async (req, res) => {
     const serverPort = req.socket?.localPort || config.port;
     if (!isValidHost(req.headers.host, serverPort)) {
@@ -1269,7 +1356,43 @@ export function createProxyServer(config, fetchImpl = fetch) {
     }
     const pathname = new URL(req.url || '/', 'http://localhost').pathname;
     if (req.method === 'GET' && pathname === '/health') {
-      sendJson(res, 200, { status: 'ok' });
+      sendJson(res, 200, { status: config.ready === false ? 'waiting_for_har' : 'ok' });
+      return;
+    }
+    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(renderDashboardPage({ port: serverPort, apiKey: config.localApiKey, models: config.modelKeys }));
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/dashboard/credentials') {
+      try {
+        const body = await readJson(req);
+        const parsed = parseCredentialPaste(body.text, body.url);
+        if (parsed.kind === 'har') {
+          const harPath = join(config.watchDir || process.cwd(), 'dashboard-credentials.har');
+          writeFileSync(harPath, JSON.stringify(parsed.har));
+          probeHarFiles(config, fetchImpl);
+        } else {
+          loadFreshConfig(config, envOverlayFromParsed(parsed), fetchImpl);
+          try {
+            writeFileSync(join(config.watchDir || process.cwd(), CREDENTIALS_FILE),
+              JSON.stringify({ headers: parsed.headers, projectId: parsed.projectId, apiBase: parsed.apiBase }, null, 2));
+          } catch { /* persistence optional */ }
+        }
+        sendJson(res, 200, { ready: config.ready !== false, models: config.modelKeys });
+      } catch (error) {
+        sendJson(res, 400, { error: { message: error.message, type: 'invalid_request_error' } });
+      }
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/v1/status') {
+      const authState = config.authSession?.getState?.();
+      sendJson(res, 200, {
+        ready: config.ready !== false,
+        models: config.modelKeys,
+        sessions: conversations.activeLocksCount(),
+        auth: authState?.expiresAt ? { expiresAt: authState.expiresAt } : null,
+      });
       return;
     }
     if (!authorized(req, config.localApiKey)) {
@@ -1277,16 +1400,8 @@ export function createProxyServer(config, fetchImpl = fetch) {
       return;
     }
     if (req.method === 'GET' && pathname === '/v1/models') {
+      if (config.ready === false) { sendJson(res, 200, { object: 'list', data: [] }); return; }
       sendJson(res, 200, { object: 'list', data: config.modelKeys.map(id => ({ id, object: 'model', created: 0, owned_by: 'factory-8090' })) });
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/v1/status') {
-      const authState = config.authSession?.getState?.();
-      sendJson(res, 200, {
-        models: config.modelKeys,
-        sessions: conversations.activeLocksCount(),
-        auth: authState?.expiresAt ? { expiresAt: authState.expiresAt } : null,
-      });
       return;
     }
     if (req.method === 'POST' && pathname === '/v1/chat/completions') {
@@ -1303,18 +1418,52 @@ export function createProxyServer(config, fetchImpl = fetch) {
     timer.unref();
     server.on('close', () => clearInterval(timer));
   }
+  if (config.watchDir) startHarWatcher(config, server, fetchImpl);
   return server;
 }
-
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const watchDir = process.env.PROXY_HAR_WATCH_DIR || scriptDir;
+  const watchEnabled = process.env.PROXY_HAR_WATCH !== '0';
+  let config = null;
   try {
-    const config = loadConfig();
-    createProxyServer(config).listen(config.port, '127.0.0.1', () => {
-      console.log(`Factory proxy listening on http://127.0.0.1:${config.port}/v1`);
-      console.log(`Configured models: ${config.modelKeys.join(', ')}`);
-    });
+    config = loadConfig();
+    console.log(`Factory proxy configured from ${config.harPath ? basename(config.harPath) : 'environment'}`);
   } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
+    config = {
+      port: Number(process.env.PROXY_PORT || 18090),
+      localApiKey: process.env.PROXY_API_KEY || 'local-trial',
+      conversationPath: process.env.PROXY_CONVERSATIONS_PATH || join(scriptDir, 'factory-conversations.json'),
+      modelKey: null,
+      modelKeys: [],
+      modelSettings: {},
+      thinkingLevel: 'medium',
+      contextWindow: 'default',
+      generationMode: 'standard',
+      servingSource: 'platform',
+      clientSessionId: randomUUID(),
+      ready: false,
+      watchEnv: process.env,
+      watchDir: watchEnabled ? watchDir : null,
+    };
+    console.log(`Factory proxy starting without credentials: ${error.message}`);
   }
+  if (watchEnabled && !config.watchDir) { config.watchEnv = config.watchEnv || process.env; config.watchDir = watchDir; }
+  const server = createProxyServer(config);
+  if (!config.ready) {
+    const saved = readSavedCredentials(join(scriptDir, CREDENTIALS_FILE));
+    if (saved?.projectId && saved?.headers) {
+      try {
+        loadFreshConfig(config, envOverlayFromParsed(saved), fetch);
+        console.log('Factory credentials restored from factory-credentials.json');
+      } catch (error) { console.info(`Saved credentials rejected: ${error.message}`); }
+    }
+    if (!config.ready && config.watchDir) probeHarFiles(config, fetch);
+  }
+  server.listen(config.port, '127.0.0.1', () => {
+    const state = config.ready ? 'live' : 'waiting for credentials';
+    console.log(`Factory proxy ${state} on http://127.0.0.1:${config.port}/ — dashboard`);
+    console.log(`OpenAI endpoint: http://127.0.0.1:${config.port}/v1 (API key: ${config.localApiKey})`);
+    if (!config.ready) console.log('Open the dashboard and paste a HAR export or request headers from factory.8090.ai');
+  });
 }
