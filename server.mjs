@@ -691,7 +691,7 @@ function factoryHeaders(config, auth) {
   return headers;
 }
 
-async function postFactory(config, endpoint, payload, signal, fetchImpl) {
+async function postFactory(config, endpoint, payload, signal, fetchImpl, retried401 = false) {
   let auth;
   if (config.authSession) {
     try { auth = await config.authSession.current(); }
@@ -714,7 +714,11 @@ async function postFactory(config, endpoint, payload, signal, fetchImpl) {
   }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new ProxyError(502, `Factory ${endpoint} returned HTTP ${response.status}`, 'upstream_error');
+    if (response.status === 401 && !retried401 && config.accounts?.length > 1 && rotateAccount(config, fetchImpl)) {
+      return postFactory(config, endpoint, payload, signal, fetchImpl, true);
+    }
+    const hint = response.status === 401 ? ' — токен истёк, вставь свежие креды на дашборде (они обновят аккаунт в пуле)' : '';
+    throw new ProxyError(502, `Factory ${endpoint} returned HTTP ${response.status}${hint}`, 'upstream_error');
   }
   return response;
 }
@@ -1286,6 +1290,50 @@ function envOverlayFromHar(harPath, sessionPath) {
   return overlay;
 }
 
+const ACCOUNTS_FILE = 'factory-accounts.json';
+
+function accountIdFromParsed(parsed) {
+  const h = parsed.headers || {};
+  const token = h.authorization?.replace(/^Bearer\s+/i, '') || h['x-sofa-cognito-id-token'] || '';
+  return token.slice(0, 32) || `acct-${Date.now()}`;
+}
+
+function persistAccounts(config) {
+  try {
+    writeFileSync(join(config.watchDir || process.cwd(), ACCOUNTS_FILE), JSON.stringify(config.accounts, null, 2));
+  } catch { /* persistence optional */ }
+}
+
+function activateAccount(config, account, fetchImpl) {
+  config.activeAccountId = account.id;
+  loadFreshConfig(config, envOverlayFromParsed(account), fetchImpl);
+}
+
+function upsertAccount(config, parsed, fetchImpl) {
+  config.accounts = config.accounts || [];
+  const account = {
+    id: accountIdFromParsed(parsed),
+    headers: parsed.headers,
+    projectId: parsed.projectId,
+    apiBase: parsed.apiBase,
+    savedAt: Date.now(),
+  };
+  const existing = config.accounts.find(a => a.id === account.id);
+  if (existing) Object.assign(existing, account); else config.accounts.push(account);
+  activateAccount(config, existing || account, fetchImpl);
+  persistAccounts(config);
+  return config.accounts.length;
+}
+
+function rotateAccount(config, fetchImpl) {
+  if (!config.accounts?.length) return null;
+  const idx = config.accounts.findIndex(a => a.id === config.activeAccountId);
+  const next = config.accounts[(idx + 1) % config.accounts.length];
+  if (next.id === config.activeAccountId) return null;
+  activateAccount(config, next, fetchImpl);
+  return next;
+}
+
 function applyRuntimeConfig(target, fresh, fetchImpl) {
   for (const key of Object.keys(fresh)) {
     if (key === 'authSession' || key === 'modelCatalogRefresh' || key === 'conversationPath' || key === 'port') continue;
@@ -1460,13 +1508,17 @@ export function createProxyServer(config, fetchImpl = fetch) {
           writeFileSync(harPath, JSON.stringify(parsed.har));
           probeHarFiles(config, fetchImpl);
         } else {
-          loadFreshConfig(config, envOverlayFromParsed(parsed), fetchImpl);
+          upsertAccount(config, parsed, fetchImpl);
           try {
             writeFileSync(join(config.watchDir || process.cwd(), CREDENTIALS_FILE),
               JSON.stringify({ headers: parsed.headers, projectId: parsed.projectId, apiBase: parsed.apiBase }, null, 2));
           } catch { /* persistence optional */ }
         }
-        sendJson(res, 200, { ready: config.ready !== false, models: config.modelKeys });
+        sendJson(res, 200, {
+          ready: config.ready !== false,
+          models: config.modelKeys,
+          accounts: config.accounts?.length || 0,
+        });
       } catch (error) {
         sendJson(res, 400, { error: { message: error.message, type: 'invalid_request_error' } });
       }
@@ -1478,6 +1530,8 @@ export function createProxyServer(config, fetchImpl = fetch) {
         ready: config.ready !== false,
         models: config.modelKeys,
         sessions: conversations.activeLocksCount(),
+        accounts: config.accounts?.length || (config.ready ? 1 : 0),
+        activeAccount: config.activeAccountId ? config.activeAccountId.slice(0, 8) : null,
         auth: authState?.expiresAt ? { expiresAt: authState.expiresAt } : null,
       });
       return;
@@ -1553,11 +1607,27 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (watchEnabled && !config.watchDir) { config.watchEnv = config.watchEnv || process.env; config.watchDir = watchDir; }
   const server = createProxyServer(config);
   if (!config.ready) {
-    const saved = readSavedCredentials(join(scriptDir, CREDENTIALS_FILE));
-    if (saved?.projectId && saved?.headers) {
+    let accounts = null;
+    try { accounts = JSON.parse(readFileSync(join(scriptDir, ACCOUNTS_FILE), 'utf8')); } catch { /* no pool file */ }
+    if (!Array.isArray(accounts) || !accounts.length) {
+      const saved = readSavedCredentials(join(scriptDir, CREDENTIALS_FILE));
+      if (saved?.projectId && saved?.headers) accounts = [saved];
+    }
+    config.accounts = [];
+    for (const account of (accounts || []).filter(a => a?.projectId && a?.headers)) {
+      config.accounts.push({
+        id: account.id || accountIdFromParsed(account),
+        headers: account.headers,
+        projectId: account.projectId,
+        apiBase: account.apiBase,
+        savedAt: account.savedAt || Date.now(),
+      });
+    }
+    if (config.accounts.length) {
       try {
-        loadFreshConfig(config, envOverlayFromParsed(saved), fetch);
-        console.log('Factory credentials restored from factory-credentials.json');
+        activateAccount(config, config.accounts[config.accounts.length - 1], fetch);
+        persistAccounts(config);
+        console.log(`Factory credentials restored: ${config.accounts.length} account(s) in pool`);
       } catch (error) { console.info(`Saved credentials rejected: ${error.message}`); }
     }
     if (!config.ready && config.watchDir) probeHarFiles(config, fetch);
