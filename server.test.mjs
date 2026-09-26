@@ -675,6 +675,38 @@ test('dashboard paste with URL as first line and headers in one blob activates t
   }
 });
 
+test('cognito-only paste activates the proxy without PROXY_API_KEY in watchEnv', async () => {
+  const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-cognitoonly-'));
+  const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
+  config.ready = false;
+  const { PROXY_API_KEY: _omit, ...bareEnv } = { ...baseEnv };
+  config.watchEnv = bareEnv;
+  config.watchDir = watchDir;
+  const server = createProxyServer(config, fakeFetch([deltaFrame('live'), doneFrame]));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    const res = await requestRaw(port, 'POST', '/dashboard/credentials', {
+      body: {
+        text: 'http://127.0.0.1:9/v2/project/project-cognito/agents/chat-agent/input\nx-sofa-cognito-id-token: cognito-har\nx-zed-token: zed-har\nx-sofa-active-org-id: org-har',
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ready, true);
+    assert.equal(config.bearerToken, 'cognito-har');
+    const completion = await requestRaw(port, 'POST', '/v1/chat/completions', {
+      auth: config.localApiKey,
+      body: completionBody({ model: 'gpt-5.6-sol' }),
+    });
+    assert.equal(completion.status, 200);
+    assert.equal(completion.json.choices[0].message.content, 'live');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(watchDir, { recursive: true, force: true });
+    try { unlinkSync(config.conversationPath); } catch { /* ignore */ }
+  }
+});
+
 test('dashboard paste with garbage returns 400', async () => {
   const watchDir = mkdtempSync(join(os.tmpdir(), 'factory-proxy-bad-'));
   const config = loadConfig({ ...baseEnv, PROXY_CONVERSATIONS_PATH: tempFilePath() });
