@@ -6,3 +6,5 @@ factory-conversations.json.*
 node_modules/
 *.tmp
 *.log
+factory-credentials.json
+dashboard-credentials.har
