@@ -1,0 +1,8 @@
+*.har
+factory-session.json
+factory-session.json.*
+factory-conversations.json
+factory-conversations.json.*
+node_modules/
+*.tmp
+*.log
