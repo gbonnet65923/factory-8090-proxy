@@ -1,6 +1,7 @@
 @echo off
+rem Starts the Factory 8090 proxy with the built-in dashboard.
+rem Drop a .har file next to this script or paste credentials at
+rem http://127.0.0.1:18090/ once it is running.
 cd /d "%~dp0"
-powershell.exe -NoProfile -File "%~dp0Start-From-Har.ps1"
-echo.
-echo Proxy stopped. Press any key to close this window.
-pause >nul
+node server.mjs
+pause
