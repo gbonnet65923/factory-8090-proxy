@@ -285,7 +285,7 @@ const CONSOLE_SNIPPET = [
   '  if (found.length) console.log("\\u041a\\u043b\\u044e\\u0447\\u0438 localStorage \\u0441 \\u0442\\u043e\\u043a\\u0435\\u043d\\u0430\\u043c\\u0438: " + found.join(", "));',
   '  console.log("%c\\u{1F3A4} \\u0425\\u0443\\u043a \\u0443\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u043b\\u0435\\u043d. \\u0422\\u0435\\u043f\\u0435\\u0440\\u044c \\u043e\\u0442\\u043f\\u0440\\u0430\\u0432\\u044c \\u0431\\u043e\\u0442\\u0443 \\u043b\\u044e\\u0431\\u043e\\u0435 \\u0441\\u043e\\u043e\\u0431\\u0449\\u0435\\u043d\\u0438\\u0435 \\u2014 \\u043a\\u0440\\u0435\\u0434\\u044b \\u0441\\u043e\\u0431\\u0435\\u0440\\u0443\\u0442\\u0441\\u044f \\u0441\\u0430\\u043c\\u0438.", "color:#58a6ff;font-size:14px");',
   '})();',
-].join('\\n');
+].join('\n');
 
 export function renderDashboardPage({ port, apiKey, models = [] }) {
   const base = `http://127.0.0.1:${port}/v1`;
