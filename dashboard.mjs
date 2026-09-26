@@ -80,12 +80,13 @@ export function envOverlayFromParsed(parsed) {
     );
   }
   if (!parsed.projectId) throw new Error('Header credentials need the request URL (contains the project id) — paste it in the URL field');
+  const cognito = h['x-sofa-cognito-id-token'] || '';
   return {
     FACTORY_API_BASE_URL: parsed.apiBase || 'https://api.factory.8090.dev',
     FACTORY_PROJECT_ID: parsed.projectId,
     FACTORY_ORG_ID: h['x-sofa-active-org-id'] || '',
-    FACTORY_BEARER_TOKEN: bearer || '',
-    FACTORY_COGNITO_TOKEN: h['x-sofa-cognito-id-token'] || '',
+    FACTORY_BEARER_TOKEN: bearer || cognito || '',
+    FACTORY_COGNITO_TOKEN: cognito || bearer || '',
     FACTORY_ZED_TOKEN: h['x-zed-token'] || '',
     FACTORY_COOKIE: h.cookie || '',
     FACTORY_WEB_CLIENT_VERSION: h['x-web-client-version'] || '0.53.7',
